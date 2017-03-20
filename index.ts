@@ -1,4 +1,5 @@
-import * as Rx from 'rx'
+import { default as xs, Observable } from 'xstream'
+import delay from 'xstream/extra/delay'
 
 export interface GearView<TModel> {
     (model: TModel): any
@@ -14,13 +15,13 @@ export interface GearTeeth<TModel> {
 }
 
 export interface Gear<TActions, TModel> {
-    catch?: (error: any, actions: TActions) => Rx.Observable<any>
+    catch?: (error: any, actions: TActions) => Observable<any>
     intent?: (sources: any) => TActions
-    model?: (actions: TActions) => Rx.Observable<TModel>
+    model?: (actions: TActions) => Observable<TModel>
     teeth?: GearTeeth<TModel>
 }
 
-export type Transmission = ((sources: any) => Rx.Observable<Gear<any, any>>) | Rx.Observable<Gear<any, any>>
+export type Transmission = ((sources: any) => Observable<Gear<any, any>>) | Observable<Gear<any, any>>
 
 export interface PedalOptions {
     defaultGear?: Gear<any, any>
@@ -29,19 +30,19 @@ export interface PedalOptions {
 }
 
 export function pedal(transmission: Transmission, {
-    defaultGear = { intent: (sources: any) => ({}), model: (actions: any) => Rx.Observable.just({}), teeth: {} as GearTeeth<any> },
+    defaultGear = { intent: (sources: any) => ({}), model: (actions: any) => xs.of({}), teeth: {} as GearTeeth<any> },
     defaultFilter = (model: any) => true,
     sinkMap = new Map()
 }: PedalOptions = {}) {
     let { catch: defaultCatch, intent: defaultIntent, model: defaultModel } = defaultGear
-    defaultCatch = defaultCatch || ((error: any) => Rx.Observable.throw(error))
+    defaultCatch = defaultCatch || ((error: any) => xs.throw(error))
     defaultIntent = defaultIntent || ((sources: any) => ({}))
-    defaultModel = defaultModel || ((actions: any) => Rx.Observable.just({}).delay(300)) // TODO: Why does this delay work?
+    defaultModel = defaultModel || ((actions: any) => xs.of({}).compose(delay(300))) // TODO: Why does this delay work?
 
     // Fully expand tooth defaults to avoid doing all the tests below every time
     const teeth = Object.keys(defaultGear.teeth)
     const toothDefaults: { [name: string]: GearTooth<any> } = {}
-    const emptyTeeth = teeth.reduce((accum, cur) => Object.assign(accum, { [cur]: Rx.Observable.never() }), {})
+    const emptyTeeth = teeth.reduce((accum, cur) => Object.assign(accum, { [cur]: xs.never() }), {})
     for (let tooth of teeth) {
         const defGearTooth = defaultGear.teeth[tooth]
         if (defGearTooth instanceof Function) {
@@ -72,30 +73,49 @@ export function pedal(transmission: Transmission, {
     }
 
     return (sources: any) => {
-        let gear$: Rx.Observable<Gear<any, any>>
+        let gear$: Observable<Gear<any, any>>
         if (transmission instanceof Function) {
             gear$ = transmission(sources)
         } else {
-            gear$ = transmission as Rx.Observable<Gear<any, any>>
+            gear$ = transmission as Observable<Gear<any, any>>
         }
 
-        const spin$ = gear$.map(gear => {
+        function shareReplay(s$, num) {
+            return s$.fold((acc, x) => {
+                acc.push(x)
+                return acc
+            }, []).take(num)
+        }
+
+        function shareValue(s$, value) {
+            return s$.fold((acc, x) => {
+                acc.push(x)
+                return acc
+            }, value)
+        }
+
+        let spin$ = xs.fromObservable(gear$).map((gear: Gear<any, any>) => {
             const actions = gear.intent ? gear.intent(sources) : defaultIntent(sources)
             const state$ = (gear.model ? gear.model(actions) : defaultModel(actions))
-                .catch((err: any) => gear.catch ? gear.catch(err, actions) : defaultCatch(err, actions))
-                .shareReplay(1)
+            const a$ = xs.fromObservable(state$)
+                .replaceError((err: any) =>
+                    xs.fromObservable(gear.catch ? gear.catch(err, actions) : defaultCatch(err, actions))
+                )
+            const b$ = shareReplay(a$, 1)
+
             const views = teeth.reduce((accum, tooth) => Object.assign(accum, {
-                [tooth]: state$.filter(toothFilter(tooth, gear.teeth[tooth])).map(toothView(tooth, gear.teeth[tooth]))
+                [tooth]: xs.fromObservable(state$).filter(toothFilter(tooth, gear.teeth[tooth])).map(toothView(tooth, gear.teeth[tooth]))
             }),
-                                       {})
+                {})
 
             return views
-        }).shareValue(emptyTeeth)
+        })
+        spin$ = shareValue(spin$, emptyTeeth)
 
         const sinks = teeth.reduce((accum, tooth) => Object.assign(accum, {
-            [sinkMap.has(tooth) ? sinkMap.get(tooth) : tooth]: spin$.flatMapLatest((views: any) => views[tooth])
+            [sinkMap.has(tooth) ? sinkMap.get(tooth) : tooth]: spin$.map((views: any) => views[tooth]).flatten()
         }),
-                                   {})
+            {})
 
         return sinks
     }

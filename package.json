@@ -20,7 +20,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "compile": "tsc -p tsconfig.es2015.json && tsc -p tsconfig.json",
-    "prepublish": "npm run compile"
+    "pre-publish": "npm run compile"
   },
   "repository": {
     "type": "git",
@@ -33,7 +33,11 @@
   },
   "homepage": "https://github.com/WorldMaker/cycle-gear#readme",
   "devDependencies": {
-    "tslint-config-standard": "^3.0.0",
-    "typescript": "^2.1.5"
+    "tslint": "^4.5.0",
+    "tslint-config-standard": "^4.0.0",
+    "typescript": "^2.2.1"
+  },
+  "dependencies": {
+    "xstream": "^10.3.0"
   }
 }
